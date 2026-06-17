@@ -1,83 +1,86 @@
 import asyncio
+import os
+from datetime import datetime
 import aiosqlite
+from dotenv import load_dotenv
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.filters import Command
 
-# --- CONFIG ---
-TOKEN = "YOUR_BOT_TOKEN_HERE"
-OWNER_ID = 123456789 # Apni ID yahan daalo
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+OWNER_ID = int(os.getenv("OWNER_ID"))
 DB = "usernames.db"
 
-bot = Bot(token=TOKEN)
+bot = Bot(TOKEN)
 dp = Dispatcher()
+
+# --- HELPER ---
+def now(): return datetime.now().strftime("%d %B %Y | %I:%M %p")
 
 # --- DB INIT ---
 async def db_init():
     async with aiosqlite.connect(DB) as db:
-        await db.execute("CREATE TABLE IF NOT EXISTS usernames(username TEXT PRIMARY KEY, views INTEGER DEFAULT 0)")
+        await db.execute("CREATE TABLE IF NOT EXISTS usernames(username TEXT PRIMARY KEY, added TEXT, views INTEGER DEFAULT 0)")
+        await db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
         await db.commit()
 
-# --- START WITH LANGUAGE SELECTOR ---
+# --- START (Language Selection) ---
 @dp.message(Command("start"))
 async def start(m: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🇮🇳 Hindi", callback_data="lang_hi"), 
          InlineKeyboardButton(text="🇺🇸 English", callback_data="lang_en")]
     ])
-    await m.answer("🚀 **Welcome to Username Pro**\nSelect your language to continue:", reply_markup=kb)
+    await m.answer("🚀 **Welcome to Username Pro**\nSelect your language:", reply_markup=kb)
 
-# --- LANGUAGE & MAIN MENU ---
 @dp.callback_query(F.data.startswith("lang_"))
-async def set_lang(c: CallbackQuery):
-    lang = c.data.split("_")[1]
-    text = "नमस्ते! आप अब हिंदी मोड में हैं।" if lang == "hi" else "Hello! You are now in English mode."
-    
+async def main_menu(c: CallbackQuery):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 List", callback_data="list_0")],
-        [InlineKeyboardButton(text="⚙️ Admin Panel", callback_data="admin_menu")]
+        [InlineKeyboardButton(text="📋 User List", callback_data="list_0")],
+        [InlineKeyboardButton(text="⚙️ Admin Panel", callback_data="admin_panel")]
     ])
-    await c.message.edit_text(f"{text}\n\nSelect an action:", reply_markup=kb)
-    await c.answer()
+    await c.message.edit_text("✅ **Main Menu**\nManage usernames efficiently.", reply_markup=kb)
 
-# --- PAGINATION (FIXED) ---
+# --- LIST & PAGINATION (Pro) ---
 async def show_list(c: CallbackQuery, page: int):
-    limit = 5
+    limit = 8
     offset = page * limit
     async with aiosqlite.connect(DB) as db:
-        cur = await db.execute("SELECT username FROM usernames LIMIT ? OFFSET ?", (limit, offset))
+        cur = await db.execute("SELECT username, views FROM usernames LIMIT ? OFFSET ?", (limit, offset))
         rows = await cur.fetchall()
-        cur_total = await db.execute("SELECT count(*) FROM usernames")
-        total = (await cur_total.fetchone())[0]
+        total = (await db.execute("SELECT count(*) FROM usernames")).fetchone()[0]
 
     if not rows: return await c.answer("No users!")
     
-    text = f"📜 **Page {page+1}**\n" + "\n".join([f"• @{r[0]}" for r in rows])
+    text = f"📜 **User List - Page {page+1}**\n\n" + "\n".join([f"• `@{r[0]}` | 👁 {r[1]} views" for r in rows])
     btns = []
     if page > 0: btns.append(InlineKeyboardButton(text="« Prev", callback_data=f"list_{page-1}"))
     if (offset + limit) < total: btns.append(InlineKeyboardButton(text="Next »", callback_data=f"list_{page+1}"))
     
-    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[btns]))
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[btns]), parse_mode="Markdown")
 
 @dp.callback_query(F.data.startswith("list_"))
-async def nav_list(c: CallbackQuery):
-    await show_list(c, int(c.data.split("_")[1]))
+async def nav(c: CallbackQuery): await show_list(c, int(c.data.split("_")[1]))
 
-# --- ADMIN PANEL ---
-@dp.callback_query(F.data == "admin_menu")
+# --- ADMIN PANEL (Fixed & Pro) ---
+@dp.callback_query(F.data == "admin_panel")
 async def admin(c: CallbackQuery):
-    if c.from_user.id != OWNER_ID: return await c.answer("❌ Access Denied!")
+    if c.from_user.id != OWNER_ID: return await c.answer("❌ Access Denied!", show_alert=True)
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🧹 Clear Low Views", callback_data="admin_clean")]
+        [InlineKeyboardButton(text="🧹 Auto-Cleanup (Low Views)", callback_data="clean_low")],
+        [InlineKeyboardButton(text="📢 Broadcast Message", callback_data="broadcast")],
+        [InlineKeyboardButton(text="« Back", callback_data="list_0")]
     ])
-    await c.message.edit_text("🛠 **Admin Panel**", reply_markup=kb)
+    await c.message.edit_text("🛠 **Owner Control Panel**", reply_markup=kb)
 
-@dp.callback_query(F.data == "admin_clean")
-async def admin_clean(c: CallbackQuery):
+@dp.callback_query(F.data == "clean_low")
+async def clean(c: CallbackQuery):
     async with aiosqlite.connect(DB) as db:
         await db.execute("DELETE FROM usernames WHERE views < 10")
         await db.commit()
-    await c.answer("✅ Cleaned!", show_alert=True)
+    await c.answer("✅ Low views cleared!", show_alert=True)
 
 # --- RUN ---
 async def main():
