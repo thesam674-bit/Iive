@@ -6,7 +6,13 @@ import aiosqlite
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher
-from aiogram.types import Message, BotCommand
+from aiogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+    BotCommand
+)
 from aiogram.filters import Command
 
 
@@ -30,20 +36,20 @@ def now():
 
 
 
-def is_owner(m):
+def owner(m):
     return m.from_user.id == OWNER_ID
 
 
 
-async def init_db():
+async def db_init():
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute("""
         CREATE TABLE IF NOT EXISTS usernames(
-            username TEXT PRIMARY KEY,
-            added TEXT,
-            tracking INTEGER DEFAULT 0
+        username TEXT PRIMARY KEY,
+        added TEXT,
+        tracking INTEGER DEFAULT 0
         )
         """)
 
@@ -51,43 +57,21 @@ async def init_db():
 
 
 
-async def set_commands():
+async def commands():
 
-    commands = [
-
-        BotCommand(command="start",
-        description="Start bot"),
-
-        BotCommand(command="help",
-        description="Commands list"),
-
-        BotCommand(command="add",
-        description="Add username"),
-
-        BotCommand(command="list",
-        description="Saved usernames"),
-
-        BotCommand(command="remove",
-        description="Remove username"),
-
-        BotCommand(command="live",
-        description="Start tracking"),
-
-        BotCommand(command="tlist",
-        description="Tracking list"),
-
-        BotCommand(command="stop",
-        description="Stop tracking"),
-
-        BotCommand(command="worth",
-        description="Username value"),
-
-        BotCommand(command="stats",
-        description="Bot stats"),
-
-    ]
-
-    await bot.set_my_commands(commands)
+    await bot.set_my_commands([
+        BotCommand("start","Start bot"),
+        BotCommand("help","Commands"),
+        BotCommand("add","Add username"),
+        BotCommand("list","Username list"),
+        BotCommand("time","Added time"),
+        BotCommand("remove","Remove username"),
+        BotCommand("live","Track username"),
+        BotCommand("tlist","Tracking list"),
+        BotCommand("stop","Stop tracking"),
+        BotCommand("worth","Username value"),
+        BotCommand("stats","Bot stats")
+    ])
 
 
 
@@ -96,10 +80,26 @@ async def set_commands():
 @dp.message(Command("start"))
 async def start(m:Message):
 
-    await m.answer(
-"""Username Manager Pro
+    kb = InlineKeyboardMarkup(
+    inline_keyboard=[
 
-Use /help to view commands."""
+        [
+        InlineKeyboardButton(
+        text="List",
+        callback_data="list_0")
+        ],
+
+        [
+        InlineKeyboardButton(
+        text="Stats",
+        callback_data="stats")
+        ]
+
+    ])
+
+    await m.answer(
+    "Username Manager Pro\n\nUse /help",
+    reply_markup=kb
     )
 
 
@@ -112,43 +112,32 @@ async def help(m:Message):
     await m.answer("""
 Username Manager Pro
 
-Commands:
-
-/add @username
-Add usernames
+/add @user
+Add username
 
 /list
-Saved usernames
+View usernames
 
-/remove @username
-Remove username
+/time @user
+Added date
 
-/live @username
+/remove @user
+Remove
+
+/live @user
 Start tracking
 
 /tlist
 Tracking list
 
-/stop @username
+/stop @user
 Stop tracking
 
-/worth @username
-Check value
+/worth @user
+Value check
 
 /stats
-Bot stats
-
-
-Owner:
-
-/clear
-Clear data
-
-/deleteall
-Delete database
-
-/broadcast text
-Send message
+Statistics
 """)
 
 
@@ -158,11 +147,11 @@ Send message
 @dp.message(Command("add"))
 async def add(m:Message):
 
-    users = m.text.split()[1:]
+    users=m.text.split()[1:]
 
     if not users:
         return await m.answer(
-        "Use: /add @username"
+        "Use /add @username"
         )
 
 
@@ -173,17 +162,99 @@ async def add(m:Message):
             await db.execute(
             "INSERT OR IGNORE INTO usernames VALUES(?,?,0)",
             (
-                u.replace("@",""),
-                now()
-            )
-            )
+            u.replace("@",""),
+            now()
+            ))
 
         await db.commit()
 
 
     await m.answer(
-    "Usernames added."
+    "Username saved."
     )
+
+
+
+
+
+
+async def show_list(target,page):
+
+    limit=10
+    offset=page*limit
+
+
+    async with aiosqlite.connect(DB) as db:
+
+        cur=await db.execute(
+        "SELECT username FROM usernames LIMIT ? OFFSET ?",
+        (limit,offset)
+        )
+
+        rows=await cur.fetchall()
+
+
+        cur=await db.execute(
+        "SELECT COUNT(*) FROM usernames"
+        )
+
+        total=await cur.fetchone()
+
+
+
+    if not rows:
+        return
+
+
+    text=f"Username List\nPage {page+1}\n\n"
+
+
+    for i,r in enumerate(rows,offset+1):
+
+        text+=f"{i}. @{r[0]}\n"
+
+
+
+    btn=[]
+
+
+    if page>0:
+
+        btn.append(
+        InlineKeyboardButton(
+        text="Back",
+        callback_data=f"list_{page-1}"
+        ))
+
+
+    if offset+limit < total[0]:
+
+        btn.append(
+        InlineKeyboardButton(
+        text="Next",
+        callback_data=f"list_{page+1}"
+        ))
+
+
+
+    kb=InlineKeyboardMarkup(
+    inline_keyboard=[btn]
+    )
+
+
+    if isinstance(target,Message):
+
+        await target.answer(
+        text,
+        reply_markup=kb
+        )
+
+    else:
+
+        await target.message.edit_text(
+        text,
+        reply_markup=kb
+        )
 
 
 
@@ -192,34 +263,49 @@ async def add(m:Message):
 @dp.message(Command("list"))
 async def list_cmd(m:Message):
 
+    await show_list(m,0)
+
+
+
+
+
+@dp.callback_query(lambda c:c.data.startswith("list_"))
+async def page(c:CallbackQuery):
+
+    await show_list(
+    c,
+    int(c.data.split("_")[1])
+    )
+
+
+
+
+
+@dp.message(Command("time"))
+async def time_cmd(m:Message):
+
+    u=m.text.split()[1].replace("@","")
+
+
     async with aiosqlite.connect(DB) as db:
 
-        cur = await db.execute(
-        "SELECT username,added FROM usernames"
+        cur=await db.execute(
+        "SELECT added FROM usernames WHERE username=?",
+        (u,)
         )
 
-        rows = await cur.fetchall()
+        r=await cur.fetchone()
 
 
-    if not rows:
+    if not r:
         return await m.answer(
-        "No usernames found."
+        "Not found."
         )
 
 
-    text="Saved Usernames\n\n"
-
-
-    for i,r in enumerate(rows,1):
-
-        text += f"""
-{i}. @{r[0]}
-Added: {r[1]}
-
-"""
-
-
-    await m.answer(text)
+    await m.answer(
+    f"@{u}\nAdded:\n{r[0]}"
+    )
 
 
 
@@ -228,24 +314,21 @@ Added: {r[1]}
 @dp.message(Command("remove"))
 async def remove(m:Message):
 
-    args=m.text.split()
-
-    if len(args)<2:
-        return
+    u=m.text.split()[1].replace("@","")
 
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute(
         "DELETE FROM usernames WHERE username=?",
-        (args[1].replace("@",""),)
+        (u,)
         )
 
         await db.commit()
 
 
     await m.answer(
-    "Username removed."
+    "Removed."
     )
 
 
@@ -255,17 +338,14 @@ async def remove(m:Message):
 @dp.message(Command("live"))
 async def live(m:Message):
 
-    args=m.text.split()
-
-    if len(args)<2:
-        return
+    u=m.text.split()[1].replace("@","")
 
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute(
         "UPDATE usernames SET tracking=1 WHERE username=?",
-        (args[1].replace("@",""),)
+        (u,)
         )
 
         await db.commit()
@@ -285,27 +365,16 @@ async def tlist(m:Message):
     async with aiosqlite.connect(DB) as db:
 
         cur=await db.execute(
-        "SELECT username,added FROM usernames WHERE tracking=1"
+        "SELECT username FROM usernames WHERE tracking=1"
         )
 
         rows=await cur.fetchall()
 
 
-    if not rows:
-        return await m.answer(
-        "No tracking usernames."
-        )
+    text="Tracking\n\n"
 
-
-    text="Tracking List\n\n"
-
-    for r in rows:
-
-        text += f"""
-@{r[0]}
-Started: {r[1]}
-
-"""
+    for x in rows:
+        text+=f"@{x[0]}\n"
 
 
     await m.answer(text)
@@ -317,24 +386,21 @@ Started: {r[1]}
 @dp.message(Command("stop"))
 async def stop(m:Message):
 
-    args=m.text.split()
-
-    if len(args)<2:
-        return
+    u=m.text.split()[1].replace("@","")
 
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute(
         "UPDATE usernames SET tracking=0 WHERE username=?",
-        (args[1].replace("@",""),)
+        (u,)
         )
 
         await db.commit()
 
 
     await m.answer(
-    "Tracking stopped."
+    "Stopped."
     )
 
 
@@ -344,37 +410,20 @@ async def stop(m:Message):
 @dp.message(Command("worth"))
 async def worth(m:Message):
 
-    args=m.text.split()
-
-    if len(args)<2:
-        return
-
-
-    u=args[1].replace("@","")
-
-    score=100-len(u)*5
-
-    if score<10:
-        score=10
-
+    u=m.text.split()[1].replace("@","")
 
     await m.answer(f"""
-Username Analysis
-
 Username:
 @{u}
 
 Length:
 {len(u)}
 
-Score:
-{score}/100
+Estimate:
+Based on rarity
 
-Type:
-Premium estimate
-
-Note:
-Market value depends on Fragment demand.
+Fragment:
+Check market listings
 """)
 
 
@@ -387,79 +436,14 @@ async def stats(m:Message):
     async with aiosqlite.connect(DB) as db:
 
         cur=await db.execute(
-        "SELECT COUNT(*),SUM(tracking) FROM usernames"
+        "SELECT COUNT(*) FROM usernames"
         )
 
         r=await cur.fetchone()
 
 
-    await m.answer(f"""
-Bot Stats
-
-Saved:
-{r[0]}
-
-Tracking:
-{r[1] or 0}
-
-Status:
-Online
-""")
-
-
-
-
-
-# OWNER
-
-
-@dp.message(Command("clear"))
-async def clear(m:Message):
-
-    if not is_owner(m):
-        return
-
-    async with aiosqlite.connect(DB) as db:
-
-        await db.execute(
-        "DELETE FROM usernames"
-        )
-
-        await db.commit()
-
-
     await m.answer(
-    "Database cleared."
-    )
-
-
-
-
-@dp.message(Command("deleteall"))
-async def deleteall(m:Message):
-
-    if not is_owner(m):
-        return
-
-    await clear(m)
-
-
-
-
-
-@dp.message(Command("broadcast"))
-async def broadcast(m:Message):
-
-    if not is_owner(m):
-        return
-
-    msg=m.text.replace(
-    "/broadcast",""
-    ).strip()
-
-
-    await m.answer(
-    "Broadcast sent:\n"+msg
+    f"Saved usernames: {r[0]}"
     )
 
 
@@ -468,9 +452,9 @@ async def broadcast(m:Message):
 
 async def main():
 
-    await init_db()
+    await db_init()
 
-    await set_commands()
+    await commands()
 
     await dp.start_polling(bot)
 
