@@ -3,6 +3,7 @@ import os
 import aiosqlite
 
 from dotenv import load_dotenv
+
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     Message,
@@ -10,10 +11,12 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     InlineKeyboardButton
 )
+
 from aiogram.filters import Command
 
 
 load_dotenv()
+
 
 TOKEN = os.getenv("BOT_TOKEN")
 
@@ -21,7 +24,8 @@ OWNER_ID = 8864002775
 
 ADMIN_PASSWORD = "TG-Pro_9xA7_Channel_Manager_2026"
 
-DB = "usernames.db"
+
+DB = "bot.db"
 
 
 bot = Bot(token=TOKEN)
@@ -29,12 +33,14 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 
+ADMIN_USERS = set()
 
-# DATABASE
+
 
 async def db_init():
 
     async with aiosqlite.connect(DB) as db:
+
 
         await db.execute("""
         CREATE TABLE IF NOT EXISTS usernames(
@@ -42,21 +48,56 @@ async def db_init():
         )
         """)
 
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS settings(
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """)
+
+
         await db.commit()
 
 
 
-# MENU
+async def get_setting(key):
 
-def menu():
+    async with aiosqlite.connect(DB) as db:
+
+        cur = await db.execute(
+            "SELECT value FROM settings WHERE key=?",
+            (key,)
+        )
+
+        data = await cur.fetchone()
+
+        return data[0] if data else None
+
+
+
+async def save_setting(key,value):
+
+    async with aiosqlite.connect(DB) as db:
+
+        await db.execute(
+            "INSERT OR REPLACE INTO settings VALUES(?,?)",
+            (key,value)
+        )
+
+        await db.commit()
+
+
+
+def main_menu():
 
     return InlineKeyboardMarkup(
         inline_keyboard=[
 
         [
         InlineKeyboardButton(
-            text="📋 List",
-            callback_data="list_0"
+            text="📋 Username List",
+            callback_data="list"
         )
         ],
 
@@ -79,8 +120,6 @@ def menu():
 
 
 
-# START
-
 @dp.message(Command("start"))
 async def start(m:Message):
 
@@ -90,8 +129,6 @@ async def start(m:Message):
 
 
 
-# HELP
-
 @dp.message(Command("help"))
 async def help_cmd(m:Message):
 
@@ -100,30 +137,24 @@ async def help_cmd(m:Message):
 🆘 Commands
 
 /add @username
-Add username
 
 /remove username
-Remove username
 
 /list
-Show list
 
 /check username
-Check username
 
 /stats
-Total count
 """
     )
 
 
 
-# ADD
-
 @dp.message(Command("add"))
 async def add(m:Message):
 
     args=m.text.split()
+
 
     if len(args)<2:
         return await m.answer(
@@ -145,22 +176,19 @@ async def add(m:Message):
 
 
     await m.answer(
-        f"✅ @{u} added"
+        f"✅ @{u} saved"
     )
 
 
-
-# REMOVE
 
 @dp.message(Command("remove"))
 async def remove(m:Message):
 
     args=m.text.split()
 
+
     if len(args)<2:
-        return await m.answer(
-            "Use /remove username"
-        )
+        return
 
 
     u=args[1].replace("@","")
@@ -182,24 +210,10 @@ async def remove(m:Message):
 
 
 
-# LIST
-
-async def show_list(c,page):
-
-    limit=10
-
-    offset=page*limit
-
+@dp.message(Command("stats"))
+async def stats(m:Message):
 
     async with aiosqlite.connect(DB) as db:
-
-        cur=await db.execute(
-            "SELECT username FROM usernames LIMIT ? OFFSET ?",
-            (limit,offset)
-        )
-
-        rows=await cur.fetchall()
-
 
         cur=await db.execute(
             "SELECT COUNT(*) FROM usernames"
@@ -207,161 +221,18 @@ async def show_list(c,page):
 
         total=(await cur.fetchone())[0]
 
-
-
-    if not rows:
-
-        return await c.answer(
-            "No data",
-            show_alert=True
-        )
-
-
-    text=f"📋 Page {page+1}\n\n"
-
-
-    for x in rows:
-
-        text += f"• @{x[0]}\n"
-
-
-
-    buttons=[]
-
-
-    if page>0:
-
-        buttons.append(
-        InlineKeyboardButton(
-            text="⬅️ Back",
-            callback_data=f"list_{page-1}"
-        ))
-
-
-
-    if offset+limit < total:
-
-        buttons.append(
-        InlineKeyboardButton(
-            text="Next ➡️",
-            callback_data=f"list_{page+1}"
-        ))
-
-
-
-    buttons.append(
-    InlineKeyboardButton(
-        text="🔙 Menu",
-        callback_data="home"
-    ))
-
-
-
-    await c.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[buttons]
-        )
-    )
-
-
-
-@dp.message(Command("list"))
-async def list_cmd(m:Message):
 
     await m.answer(
-        "📋 Username List",
-        reply_markup=menu()
+        f"📊 Total usernames: {total}"
     )
 
 
 
-@dp.callback_query(F.data.startswith("list_"))
-async def list_page(c:CallbackQuery):
-
-    page=int(c.data.split("_")[1])
-
-    await show_list(c,page)
-
-
-
-# CHECK
-
-@dp.message(Command("check"))
-async def check(m:Message):
-
-    args=m.text.split()
-
-
-    if len(args)<2:
-        return await m.answer(
-            "Use /check username"
-        )
-
-
-    u=args[1].replace("@","")
-
-
-    try:
-
-        await bot.get_chat("@"+u)
-
-        await m.answer(
-            f"❌ @{u} Taken"
-        )
-
-    except:
-
-        await m.answer(
-            f"✅ @{u} Available"
-        )
-
-
-
-# STATS
-
-@dp.callback_query(F.data=="stats")
-async def stats(c:CallbackQuery):
-
-    async with aiosqlite.connect(DB) as db:
-
-        cur=await db.execute(
-            "SELECT COUNT(*) FROM usernames"
-        )
-
-        total=(await cur.fetchone())[0]
-
-
-    await c.message.edit_text(
-        f"📊 Total Usernames: {total}",
-        reply_markup=InlineKeyboardMarkup(
-        inline_keyboard=[
-        [
-        InlineKeyboardButton(
-            text="🔙",
-            callback_data="home"
-        )
-        ]
-        ])
-    )
-
-
-
-# ADMIN BUTTON
-
-@dp.callback_query(F.data=="admin")
-async def admin_btn(c:CallbackQuery):
-
-    await c.message.answer(
-        "🔐"
-    )
-
-
-
-# SECRET OWNER LOGIN
+# SECRET LOGIN
 
 @dp.message(Command("secure"))
 async def secure(m:Message):
+
 
     args=m.text.split()
 
@@ -378,35 +249,53 @@ async def secure(m:Message):
         return
 
 
+    ADMIN_USERS.add(m.from_user.id)
+
+
+    await m.answer(
+        "🔓 Admin access unlocked\n\n"
+        "Use /admin now"
+    )
+
+
+
+# ADMIN
+
+@dp.message(Command("admin"))
+async def admin(m:Message):
+
+
+    if m.from_user.id not in ADMIN_USERS:
+
+        return await m.answer(
+            "❌ Access denied"
+        )
+
+
 
     kb=InlineKeyboardMarkup(
         inline_keyboard=[
 
         [
         InlineKeyboardButton(
-            text="🗑 Low Views Delete",
+            text="📢 Add Channel",
+            callback_data="add_channel"
+        )
+        ],
+
+
+        [
+        InlineKeyboardButton(
+            text="🗑 Low Views Cleaner",
             callback_data="low"
         )
         ],
 
-        [
-        InlineKeyboardButton(
-            text="🎨 Channel Customize",
-            callback_data="custom"
-        )
-        ],
 
         [
         InlineKeyboardButton(
-            text="📋 Username Manage",
-            callback_data="manage"
-        )
-        ],
-
-        [
-        InlineKeyboardButton(
-            text="📊 Bot Stats",
-            callback_data="stats"
+            text="🎨 Channel Settings",
+            callback_data="settings"
         )
         ]
 
@@ -414,21 +303,95 @@ async def secure(m:Message):
     )
 
 
+
     await m.answer(
-        "👑 Owner Panel",
+        "👑 Owner Dashboard\n\n"
+        "Select action:",
         reply_markup=kb
     )
 
 
 
-# BACK HOME
+# ADD CHANNEL
 
-@dp.callback_query(F.data=="home")
-async def home(c:CallbackQuery):
+@dp.callback_query(F.data=="add_channel")
+async def add_channel(c:CallbackQuery):
 
     await c.message.edit_text(
-        "Choose option:",
-        reply_markup=menu()
+        "📢 Send channel username:\n\n"
+        "Example:\n@mychannel"
+    )
+
+
+    dp.message.register(save_channel)
+
+
+
+async def save_channel(m:Message):
+
+    if m.from_user.id not in ADMIN_USERS:
+        return
+
+
+    channel=m.text.replace("@","")
+
+
+    await save_setting(
+        "channel",
+        channel
+    )
+
+
+    await m.answer(
+        f"✅ Channel added\n@{channel}"
+    )
+
+
+
+# LOW VIEWS
+
+@dp.callback_query(F.data=="low")
+async def low(c:CallbackQuery):
+
+    channel=await get_setting("channel")
+
+
+    if not channel:
+
+        return await c.message.edit_text(
+            "⚠️ No channel added.\n\n"
+            "Please add channel first."
+        )
+
+
+    await c.message.edit_text(
+        "🗑 Low Views Cleaner\n\n"
+        f"Channel: @{channel}\n\n"
+        "Ready to manage posts."
+    )
+
+
+
+# SETTINGS
+
+@dp.callback_query(F.data=="settings")
+async def settings(c:CallbackQuery):
+
+    channel=await get_setting("channel")
+
+
+    if not channel:
+
+        return await c.message.edit_text(
+            "⚠️ Please add channel first."
+        )
+
+
+    await c.message.edit_text(
+        "🎨 Channel Settings\n\n"
+        "📝 Change Name\n"
+        "📄 Change Bio\n"
+        "🖼 Change Photo"
     )
 
 
