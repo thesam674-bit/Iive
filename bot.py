@@ -1,185 +1,109 @@
 import asyncio
 import os
 from datetime import datetime
-
 import aiosqlite
 from dotenv import load_dotenv
 
-from aiogram import Bot, Dispatcher
-from aiogram.types import (
-    Message,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-    CallbackQuery,
-    BotCommand
-)
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, BotCommand
 from aiogram.filters import Command
 
-
 load_dotenv()
-
 TOKEN = os.getenv("BOT_TOKEN")
 OWNER_ID = int(os.getenv("OWNER_ID"))
-
 DB = "usernames.db"
 
 bot = Bot(TOKEN)
 dp = Dispatcher()
 
-def now():
-    return datetime.now().strftime("%d %B %Y | %I:%M %p")
-
+# --- DATABASE SETUP ---
 async def db_init():
     async with aiosqlite.connect(DB) as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS usernames(
-        username TEXT PRIMARY KEY,
-        added TEXT,
-        tracking INTEGER DEFAULT 0
-        )
-        """)
+        await db.execute("CREATE TABLE IF NOT EXISTS usernames(username TEXT PRIMARY KEY, added TEXT, tracking INTEGER DEFAULT 0, views INTEGER DEFAULT 0)")
+        await db.execute("CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT)")
         await db.commit()
 
-async def commands():
-    await bot.set_my_commands([
-        BotCommand(command="start", description="Start bot"),
-        BotCommand(command="help", description="Commands"),
-        BotCommand(command="add", description="Add username"),
-        BotCommand(command="list", description="Username list"),
-        BotCommand(command="time", description="Added time"),
-        BotCommand(command="remove", description="Remove username"),
-        BotCommand(command="live", description="Track username"),
-        BotCommand(command="tlist", description="Tracking list"),
-        BotCommand(command="stop", description="Stop tracking"),
-        BotCommand(command="worth", description="Username value"),
-        BotCommand(command="stats", description="Bot stats")
+# --- ADMIN PANEL LOGIC ---
+@dp.message(Command("admin"))
+async def admin_panel(m: Message):
+    if m.from_user.id != OWNER_ID: return
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🧹 Auto-Cleanup (Low Views)", callback_data="admin_clean")],
+        [InlineKeyboardButton(text="⚙️ Edit Settings", callback_data="admin_edit")]
     ])
+    await m.answer("🛠 **PRO OWNER PANEL**\nManage bot and database here.", reply_markup=kb)
 
+@dp.callback_query(F.data == "admin_clean")
+async def auto_clean(c: CallbackQuery):
+    async with aiosqlite.connect(DB) as db:
+        await db.execute("DELETE FROM usernames WHERE views < 10")
+        await db.commit()
+    await c.answer("✅ Low view items cleaned!", show_alert=True)
+
+# --- PAGINATION LOGIC ---
+async def show_list(c: CallbackQuery, page: int):
+    limit = 8
+    offset = page * limit
+    async with aiosqlite.connect(DB) as db:
+        async with db.execute("SELECT username, views FROM usernames LIMIT ? OFFSET ?", (limit, offset)) as cur:
+            rows = await cur.fetchall()
+        async with db.execute("SELECT COUNT(*) FROM usernames") as cur:
+            total = (await cur.fetchone())[0]
+
+    if not rows: return await c.answer("List empty!")
+    text = f"📜 **USERNAME LIST | Page {page+1}**\n\n" + "\n".join([f"• @{r[0]} | 👁 {r[1]} views" for r in rows])
+    btns = []
+    if page > 0: btns.append(InlineKeyboardButton(text="« Prev", callback_data=f"list_{page-1}"))
+    if (offset + limit) < total: btns.append(InlineKeyboardButton(text="Next »", callback_data=f"list_{page+1}"))
+    await c.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=[btns]))
+
+@dp.callback_query(F.data.startswith("list_"))
+async def list_nav(c: CallbackQuery):
+    await show_list(c, int(c.data.split("_")[1]))
+
+# --- COMMANDS ---
 @dp.message(Command("start"))
 async def start(m: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="List", callback_data="list_0")],
-        [InlineKeyboardButton(text="Stats", callback_data="stats")]
+        [InlineKeyboardButton(text="📋 List", callback_data="list_0"), InlineKeyboardButton(text="💡 Help", callback_data="help")],
+        [InlineKeyboardButton(text="🔎 Check", callback_data="check_cmd")]
     ])
-    await m.answer("Username Manager Pro\n\nUse /help", reply_markup=kb)
-
-@dp.callback_query(lambda c: c.data == "stats")
-async def stats_callback(c: CallbackQuery):
-    async with aiosqlite.connect(DB) as db:
-        async with db.execute("SELECT COUNT(*) FROM usernames") as cur:
-            r = await cur.fetchone()
-    await c.answer(f"Total: {r[0]}", show_alert=True)
-
-@dp.message(Command("help"))
-async def help(m: Message):
-    await m.answer("Username Manager Pro\n\n/add @user\n/list\n/time @user\n/remove @user\n/live @user\n/tlist\n/stop @user\n/worth @user\n/stats")
+    await m.answer("🚀 **Welcome to Pro Username Manager**\nManage your assets with ease.", reply_markup=kb)
 
 @dp.message(Command("add"))
 async def add(m: Message):
     args = m.text.split()
-    if len(args) < 2: return await m.answer("Use /add @username")
+    if len(args) < 2: return await m.answer("Usage: `/add @username`")
+    u = args[1].replace("@", "")
     async with aiosqlite.connect(DB) as db:
-        for u in args[1:]:
-            await db.execute("INSERT OR IGNORE INTO usernames VALUES(?,?,0)", (u.replace("@", ""), now()))
+        await db.execute("INSERT OR IGNORE INTO usernames (username, added) VALUES(?,?)", (u, now()))
         await db.commit()
-    await m.answer("Username saved.")
+    await m.answer(f"✅ `@{u}` added!")
 
-async def show_list(target, page):
-    limit = 10
-    offset = page * limit
-    async with aiosqlite.connect(DB) as db:
-        async with db.execute("SELECT username FROM usernames LIMIT ? OFFSET ?", (limit, offset)) as cur:
-            rows = await cur.fetchall()
-        async with db.execute("SELECT COUNT(*) FROM usernames") as cur:
-            total = await cur.fetchone()
-
-    if not rows:
-        return await target.answer("List khaali hai.") if isinstance(target, Message) else await target.answer("List khaali hai.")
-
-    text = f"Username List (Page {page+1})\n\n"
-    for i, r in enumerate(rows, offset + 1):
-        text += f"{i}. @{r[0]}\n"
-
-    btn = []
-    if page > 0: btn.append(InlineKeyboardButton(text="⬅️ Back", callback_data=f"list_{page-1}"))
-    if (offset + limit) < total[0]: btn.append(InlineKeyboardButton(text="Next ➡️", callback_data=f"list_{page+1}"))
-
-    kb = InlineKeyboardMarkup(inline_keyboard=[btn] if btn else [])
-    
-    if isinstance(target, Message):
-        await target.answer(text, reply_markup=kb)
-    else:
-        await target.message.edit_text(text, reply_markup=kb)
-        await target.answer()
-
-@dp.message(Command("list"))
-async def list_cmd(m: Message):
-    await show_list(m, 0)
-
-@dp.callback_query(lambda c: c.data and c.data.startswith("list_"))
-async def page_callback(c: CallbackQuery):
-    await show_list(c, int(c.data.split("_")[1]))
-
-@dp.message(Command("time"))
-async def time_cmd(m: Message):
+@dp.message(Command("check"))
+async def check(m: Message):
     args = m.text.split()
-    if len(args) < 2: return await m.answer("Use /time @username")
+    if len(args) < 2: return await m.answer("Usage: `/check @username`")
+    u = args[1].replace("@", "")
     async with aiosqlite.connect(DB) as db:
-        async with db.execute("SELECT added FROM usernames WHERE username=?", (args[1].replace("@", ""),)) as cur:
-            r = await cur.fetchone()
-    await m.answer(f"Added: {r[0]}" if r else "Not found.")
-
-@dp.message(Command("remove"))
-async def remove(m: Message):
-    args = m.text.split()
-    if len(args) < 2: return await m.answer("Use /remove @username")
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("DELETE FROM usernames WHERE username=?", (args[1].replace("@", ""),))
-        await db.commit()
-    await m.answer("Removed.")
-
-@dp.message(Command("live"))
-async def live(m: Message):
-    args = m.text.split()
-    if len(args) < 2: return await m.answer("Use /live @username")
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("UPDATE usernames SET tracking=1 WHERE username=?", (args[1].replace("@", ""),))
-        await db.commit()
-    await m.answer("Tracking started.")
-
-@dp.message(Command("tlist"))
-async def tlist(m: Message):
-    async with aiosqlite.connect(DB) as db:
-        async with db.execute("SELECT username FROM usernames WHERE tracking=1") as cur:
-            rows = await cur.fetchall()
-    await m.answer("Tracking:\n" + "\n".join([f"@{x[0]}" for x in rows]) if rows else "No tracking.")
-
-@dp.message(Command("stop"))
-async def stop(m: Message):
-    args = m.text.split()
-    if len(args) < 2: return await m.answer("Use /stop @username")
-    async with aiosqlite.connect(DB) as db:
-        await db.execute("UPDATE usernames SET tracking=0 WHERE username=?", (args[1].replace("@", ""),))
-        await db.commit()
-    await m.answer("Stopped.")
-
-@dp.message(Command("worth"))
-async def worth(m: Message):
-    args = m.text.split()
-    if len(args) < 2: return await m.answer("Use /worth @username")
-    await m.answer(f"@{args[1].replace('@','')} Value: Check market.")
+        cur = await db.execute("SELECT views FROM usernames WHERE username=?", (u,))
+        row = await cur.fetchone()
+    await m.answer(f"🔎 Status: **Found** ✅\n👁 Views: `{row[0]}`" if row else "❌ **Not Found**")
 
 @dp.message(Command("stats"))
 async def stats(m: Message):
     async with aiosqlite.connect(DB) as db:
-        async with db.execute("SELECT COUNT(*) FROM usernames") as cur:
-            r = await cur.fetchone()
-    await m.answer(f"Total usernames: {r[0]}")
+        cur = await db.execute("SELECT COUNT(*) FROM usernames")
+        count = (await cur.fetchone())[0]
+    await m.answer(f"📊 **Total Database Count**: `{count}`")
 
+# --- APP START ---
 async def main():
     await db_init()
-    await commands()
+    print("Bot is running...")
     await dp.start_polling(bot)
+
+def now(): return datetime.now().strftime("%d-%m-%Y")
 
 if __name__ == "__main__":
     asyncio.run(main())
