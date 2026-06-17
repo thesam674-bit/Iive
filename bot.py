@@ -1,149 +1,369 @@
+import asyncio
+import os
+import aiosqlite
+
+from dotenv import load_dotenv
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton
+)
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
-# SECRET ADMIN PASSWORD
-ADMIN_KEY = "TG-Pro_9xA7_Channel_Manager_2026"
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
+
+OWNER_ID = 8864002775
+
+ADMIN_PASSWORD = "TG-Pro_9xA7_Channel_Manager_2026"
+
+DB = "data.db"
 
 
-# ADMIN ACCESS COMMAND
+bot = Bot(token=TOKEN)
 
-@dp.message(Command("access"))
-async def access(message: Message):
+dp = Dispatcher()
 
-    args = message.text.split()
 
-    if len(args) < 2:
-        return await message.answer(
-            "❌ Use:\n/access password"
+
+async def init_db():
+
+    async with aiosqlite.connect(DB) as db:
+
+        await db.execute("""
+        CREATE TABLE IF NOT EXISTS usernames(
+            username TEXT PRIMARY KEY
         )
+        """)
+
+        await db.commit()
 
 
-    password = args[1]
 
+def menu():
 
-    if password != ADMIN_KEY:
-        return await message.answer(
-            "❌ Wrong password"
-        )
-
-
-    if message.from_user.id != 8864002775:
-        return await message.answer(
-            "❌ Access denied"
-        )
-
-
-    kb = InlineKeyboardMarkup(
+    return InlineKeyboardMarkup(
         inline_keyboard=[
 
-            [
-                InlineKeyboardButton(
-                    text="🗑 Low Views Delete",
-                    callback_data="low_views"
-                )
-            ],
+        [
+            InlineKeyboardButton(
+                text="📋 List",
+                callback_data="list_0"
+            )
+        ],
 
-            [
-                InlineKeyboardButton(
-                    text="🎨 Channel Settings",
-                    callback_data="channel_settings"
-                )
-            ],
+        [
+            InlineKeyboardButton(
+                text="📊 Stats",
+                callback_data="stats"
+            )
+        ],
 
-            [
-                InlineKeyboardButton(
-                    text="📋 Username Manage",
-                    callback_data="username_manage"
-                )
-            ],
-
-            [
-                InlineKeyboardButton(
-                    text="🔙 Back",
-                    callback_data="back"
-                )
-            ]
+        [
+            InlineKeyboardButton(
+                text="🔐 Admin",
+                callback_data="admin"
+            )
+        ]
 
         ]
     )
 
 
-    await message.answer(
-        "🔐 Admin Panel Activated\n\n"
-        "Welcome Owner 👑",
-        reply_markup=kb
+
+@dp.message(Command("start"))
+async def start(m:Message):
+
+    await m.answer(
+        "👋 Welcome\n\nUse /help for commands"
     )
 
 
 
-# LOW VIEWS BUTTON
+@dp.message(Command("help"))
+async def help_cmd(m:Message):
 
-@dp.callback_query(F.data=="low_views")
-async def low_views(call:CallbackQuery):
+    await m.answer(
+"""
+🆘 Help
 
-    await call.message.edit_text(
-        "🗑 Low Views Cleaner\n\n"
-        "Feature ready\n"
-        "Set minimum views to delete posts."
-        ,
+/add @username
+/remove username
+
+/list
+
+/check username
+
+/stats
+
+/access password
+"""
+    )
+
+
+
+@dp.message(Command("add"))
+async def add(m:Message):
+
+    args=m.text.split()
+
+    if len(args)<2:
+        return await m.answer(
+            "Use /add @username"
+        )
+
+
+    username=args[1].replace("@","").lower()
+
+
+    async with aiosqlite.connect(DB) as db:
+
+        await db.execute(
+            "INSERT OR IGNORE INTO usernames VALUES(?)",
+            (username,)
+        )
+
+        await db.commit()
+
+
+    await m.answer(
+        f"✅ Added @{username}"
+    )
+
+
+
+@dp.message(Command("remove"))
+async def remove(m:Message):
+
+    args=m.text.split()
+
+    if len(args)<2:
+        return await m.answer(
+            "Use /remove username"
+        )
+
+
+    username=args[1].replace("@","")
+
+
+    async with aiosqlite.connect(DB) as db:
+
+        await db.execute(
+            "DELETE FROM usernames WHERE username=?",
+            (username,)
+        )
+
+        await db.commit()
+
+
+    await m.answer(
+        f"🗑 Removed @{username}"
+    )
+
+
+
+async def show_list(c,page):
+
+    limit=10
+
+    offset=page*limit
+
+
+    async with aiosqlite.connect(DB) as db:
+
+        cur=await db.execute(
+            "SELECT username FROM usernames LIMIT ? OFFSET ?",
+            (limit,offset)
+        )
+
+        rows=await cur.fetchall()
+
+
+        cur=await db.execute(
+            "SELECT COUNT(*) FROM usernames"
+        )
+
+        total=(await cur.fetchone())[0]
+
+
+
+    if not rows:
+
+        return await c.answer(
+            "No data",
+            show_alert=True
+        )
+
+
+    text=f"📋 Page {page+1}\n\n"
+
+
+    for x in rows:
+        text += f"• @{x[0]}\n"
+
+
+
+    btn=[]
+
+
+    if page>0:
+
+        btn.append(
+            InlineKeyboardButton(
+                text="⬅️ Back",
+                callback_data=f"list_{page-1}"
+            )
+        )
+
+
+    if offset+limit < total:
+
+        btn.append(
+            InlineKeyboardButton(
+                text="Next ➡️",
+                callback_data=f"list_{page+1}"
+            )
+        )
+
+
+
+    await c.message.edit_text(
+        text,
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="🔙 Back",
-                        callback_data="back"
-                    )
-                ]
-            ]
+            inline_keyboard=[btn]
         )
     )
 
 
 
-# CHANNEL SETTINGS BUTTON
+@dp.message(Command("list"))
+async def list_cmd(m:Message):
 
-@dp.callback_query(F.data=="channel_settings")
-async def channel_settings(call:CallbackQuery):
-
-    await call.message.edit_text(
-        "🎨 Channel Settings\n\n"
-        "Options:\n\n"
-        "📝 Change Name\n"
-        "📄 Change Bio\n"
-        "🖼 Change Photo",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="🔙 Back",
-                        callback_data="back"
-                    )
-                ]
-            ]
-        )
+    await m.answer(
+        "📋 Username List",
+        reply_markup=menu()
     )
 
 
 
-# USERNAME MANAGE
+@dp.callback_query(F.data.startswith("list_"))
+async def list_btn(c:CallbackQuery):
 
-@dp.callback_query(F.data=="username_manage")
-async def username_manage(call:CallbackQuery):
+    page=int(c.data.split("_")[1])
 
-    await call.message.edit_text(
-        "📋 Username Manager\n\n"
-        "Use:\n"
-        "/add @username\n"
-        "/remove username",
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="🔙 Back",
-                        callback_data="back"
-                    )
-                ]
-            ]
+    await show_list(c,page)
+
+
+
+@dp.message(Command("check"))
+async def check(m:Message):
+
+    args=m.text.split()
+
+    if len(args)<2:
+        return await m.answer(
+            "Use /check username"
         )
+
+
+    username=args[1].replace("@","")
+
+
+    try:
+
+        await bot.get_chat("@"+username)
+
+        await m.answer(
+            f"❌ @{username} Taken"
+        )
+
+    except:
+
+        await m.answer(
+            f"✅ @{username} Available"
+        )
+
+
+
+@dp.callback_query(F.data=="stats")
+async def stats(c:CallbackQuery):
+
+    async with aiosqlite.connect(DB) as db:
+
+        cur=await db.execute(
+            "SELECT COUNT(*) FROM usernames"
+        )
+
+        total=(await cur.fetchone())[0]
+
+
+    await c.message.edit_text(
+        f"📊 Total: {total}"
     )
+
+
+
+@dp.callback_query(F.data=="admin")
+async def admin_btn(c:CallbackQuery):
+
+    await c.message.answer(
+        "🔐 Use:\n/access password"
+    )
+
+
+
+@dp.message(Command("access"))
+async def access(m:Message):
+
+    args=m.text.split()
+
+
+    if len(args)<2:
+
+        return await m.answer(
+            "Use /access password"
+        )
+
+
+    if m.from_user.id != OWNER_ID:
+
+        return await m.answer(
+            "❌ Denied"
+        )
+
+
+    if args[1] != ADMIN_PASSWORD:
+
+        return await m.answer(
+            "❌ Wrong password"
+        )
+
+
+    await m.answer(
+        "👑 Owner Panel\n\n"
+        "🗑 Low Views\n"
+        "🎨 Channel Settings"
+    )
+
+
+
+async def main():
+
+    await init_db()
+
+    await bot.delete_webhook(
+        drop_pending_updates=True
+    )
+
+    await dp.start_polling(bot)
+
+
+
+if __name__=="__main__":
+
+    asyncio.run(main())
