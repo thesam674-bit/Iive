@@ -1,12 +1,14 @@
 import asyncio
+import os
 from datetime import datetime
 
 import aiosqlite
-from aiogram import Bot, Dispatcher
-from aiogram.types import Message
-from aiogram.filters import Command
 from dotenv import load_dotenv
-import os
+
+from aiogram import Bot, Dispatcher
+from aiogram.types import Message, BotCommand
+from aiogram.filters import Command
+
 
 load_dotenv()
 
@@ -15,88 +17,180 @@ OWNER_ID = int(os.getenv("OWNER_ID"))
 
 DB = "usernames.db"
 
+
 bot = Bot(TOKEN)
 dp = Dispatcher()
 
 
+
 def now():
-    return datetime.now().strftime("%d %B %Y | %I:%M %p")
+    return datetime.now().strftime(
+        "%d %B %Y | %I:%M %p"
+    )
+
 
 
 def is_owner(m):
     return m.from_user.id == OWNER_ID
 
 
+
 async def init_db():
+
     async with aiosqlite.connect(DB) as db:
+
         await db.execute("""
         CREATE TABLE IF NOT EXISTS usernames(
-        username TEXT PRIMARY KEY,
-        added TEXT,
-        tracking INTEGER DEFAULT 0
+            username TEXT PRIMARY KEY,
+            added TEXT,
+            tracking INTEGER DEFAULT 0
         )
         """)
+
         await db.commit()
 
 
+
+async def set_commands():
+
+    commands = [
+
+        BotCommand(command="start",
+        description="Start bot"),
+
+        BotCommand(command="help",
+        description="Commands list"),
+
+        BotCommand(command="add",
+        description="Add username"),
+
+        BotCommand(command="list",
+        description="Saved usernames"),
+
+        BotCommand(command="remove",
+        description="Remove username"),
+
+        BotCommand(command="live",
+        description="Start tracking"),
+
+        BotCommand(command="tlist",
+        description="Tracking list"),
+
+        BotCommand(command="stop",
+        description="Stop tracking"),
+
+        BotCommand(command="worth",
+        description="Username value"),
+
+        BotCommand(command="stats",
+        description="Bot stats"),
+
+    ]
+
+    await bot.set_my_commands(commands)
+
+
+
+
+
 @dp.message(Command("start"))
-async def start(m: Message):
+async def start(m:Message):
+
     await m.answer(
-        "🤖 Username Manager Bot\n\n/help"
+"""Username Manager Pro
+
+Use /help to view commands."""
     )
 
 
+
+
+
 @dp.message(Command("help"))
-async def help(m: Message):
+async def help(m:Message):
+
     await m.answer("""
+Username Manager Pro
+
 Commands:
 
 /add @username
+Add usernames
+
 /list
+Saved usernames
+
 /remove @username
+Remove username
 
 /live @username
+Start tracking
+
 /tlist
+Tracking list
+
 /stop @username
+Stop tracking
 
 /worth @username
+Check value
+
 /stats
+Bot stats
 
 
 Owner:
 
 /clear
+Clear data
+
 /deleteall
-/users
+Delete database
+
 /broadcast text
+Send message
 """)
 
 
+
+
+
 @dp.message(Command("add"))
-async def add(m: Message):
+async def add(m:Message):
 
     users = m.text.split()[1:]
 
     if not users:
-        return await m.answer("Use /add @username")
+        return await m.answer(
+        "Use: /add @username"
+        )
+
 
     async with aiosqlite.connect(DB) as db:
 
         for u in users:
+
             await db.execute(
             "INSERT OR IGNORE INTO usernames VALUES(?,?,0)",
             (
                 u.replace("@",""),
                 now()
-            ))
+            )
+            )
 
         await db.commit()
 
-    await m.answer("✅ Added")
+
+    await m.answer(
+    "Usernames added."
+    )
+
+
+
 
 
 @dp.message(Command("list"))
-async def listing(m: Message):
+async def list_cmd(m:Message):
 
     async with aiosqlite.connect(DB) as db:
 
@@ -108,9 +202,13 @@ async def listing(m: Message):
 
 
     if not rows:
-        return await m.answer("Empty")
+        return await m.answer(
+        "No usernames found."
+        )
 
-    text="📋 Username List\n\n"
+
+    text="Saved Usernames\n\n"
+
 
     for i,r in enumerate(rows,1):
 
@@ -120,53 +218,69 @@ Added: {r[1]}
 
 """
 
+
     await m.answer(text)
 
 
 
+
+
 @dp.message(Command("remove"))
-async def remove(m: Message):
+async def remove(m:Message):
 
-    u=m.text.split()
+    args=m.text.split()
 
-    if len(u)<2:
+    if len(args)<2:
         return
+
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute(
         "DELETE FROM usernames WHERE username=?",
-        (u[1].replace("@",""),))
+        (args[1].replace("@",""),)
+        )
 
         await db.commit()
 
 
-    await m.answer("✅ Removed")
+    await m.answer(
+    "Username removed."
+    )
+
+
 
 
 
 @dp.message(Command("live"))
-async def live(m: Message):
+async def live(m:Message):
 
-    u=m.text.split()
+    args=m.text.split()
 
-    if len(u)<2:
+    if len(args)<2:
         return
+
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute(
         "UPDATE usernames SET tracking=1 WHERE username=?",
-        (u[1].replace("@",""),))
+        (args[1].replace("@",""),)
+        )
 
         await db.commit()
 
-    await m.answer("🔎 Tracking Started")
+
+    await m.answer(
+    "Tracking started."
+    )
+
+
 
 
 
 @dp.message(Command("tlist"))
-async def tlist(m: Message):
+async def tlist(m:Message):
 
     async with aiosqlite.connect(DB) as db:
 
@@ -177,95 +291,152 @@ async def tlist(m: Message):
         rows=await cur.fetchall()
 
 
-    text="🔎 Tracking List\n\n"
+    if not rows:
+        return await m.answer(
+        "No tracking usernames."
+        )
+
+
+    text="Tracking List\n\n"
 
     for r in rows:
-        text+=f"@{r[0]}\nStarted: {r[1]}\n\n"
+
+        text += f"""
+@{r[0]}
+Started: {r[1]}
+
+"""
+
 
     await m.answer(text)
 
 
 
+
+
 @dp.message(Command("stop"))
-async def stop(m: Message):
+async def stop(m:Message):
 
-    u=m.text.split()
+    args=m.text.split()
 
-    if len(u)<2:
+    if len(args)<2:
         return
+
 
     async with aiosqlite.connect(DB) as db:
 
         await db.execute(
         "UPDATE usernames SET tracking=0 WHERE username=?",
-        (u[1].replace("@",""),))
+        (args[1].replace("@",""),)
+        )
 
         await db.commit()
 
 
-    await m.answer("⛔ Stopped")
+    await m.answer(
+    "Tracking stopped."
+    )
+
+
 
 
 
 @dp.message(Command("worth"))
-async def worth(m: Message):
+async def worth(m:Message):
 
-    u=m.text.split()
+    args=m.text.split()
 
-    if len(u)<2:
+    if len(args)<2:
         return
 
-    name=u[1].replace("@","")
+
+    u=args[1].replace("@","")
+
+    score=100-len(u)*5
+
+    if score<10:
+        score=10
+
 
     await m.answer(f"""
-💎 Username Worth
+Username Analysis
 
-Username: @{name}
+Username:
+@{u}
 
-Length: {len(name)}
+Length:
+{len(u)}
 
-Market:
-Check Fragment for live price
+Score:
+{score}/100
+
+Type:
+Premium estimate
+
+Note:
+Market value depends on Fragment demand.
 """)
 
 
 
+
+
 @dp.message(Command("stats"))
-async def stats(m: Message):
+async def stats(m:Message):
 
     async with aiosqlite.connect(DB) as db:
 
         cur=await db.execute(
-        "SELECT COUNT(*) FROM usernames")
+        "SELECT COUNT(*),SUM(tracking) FROM usernames"
+        )
 
-        total=await cur.fetchone()
+        r=await cur.fetchone()
 
 
-    await m.answer(
-    f"📊 Saved: {total[0]}"
-    )
+    await m.answer(f"""
+Bot Stats
+
+Saved:
+{r[0]}
+
+Tracking:
+{r[1] or 0}
+
+Status:
+Online
+""")
+
+
 
 
 
 # OWNER
 
+
 @dp.message(Command("clear"))
-async def clear(m: Message):
+async def clear(m:Message):
 
     if not is_owner(m):
         return
 
     async with aiosqlite.connect(DB) as db:
 
-        await db.execute("DELETE FROM usernames")
+        await db.execute(
+        "DELETE FROM usernames"
+        )
+
         await db.commit()
 
-    await m.answer("🗑 Cleared")
+
+    await m.answer(
+    "Database cleared."
+    )
+
 
 
 
 @dp.message(Command("deleteall"))
-async def deleteall(m: Message):
+async def deleteall(m:Message):
 
     if not is_owner(m):
         return
@@ -274,33 +445,32 @@ async def deleteall(m: Message):
 
 
 
-@dp.message(Command("users"))
-async def users(m: Message):
-
-    if not is_owner(m):
-        return
-
-    await m.answer("Owner command")
-
 
 
 @dp.message(Command("broadcast"))
-async def broadcast(m: Message):
+async def broadcast(m:Message):
 
     if not is_owner(m):
         return
 
-    msg=m.text.replace("/broadcast","").strip()
+    msg=m.text.replace(
+    "/broadcast",""
+    ).strip()
+
 
     await m.answer(
-    "✅ Broadcast:\n"+msg
+    "Broadcast sent:\n"+msg
     )
+
+
 
 
 
 async def main():
 
     await init_db()
+
+    await set_commands()
 
     await dp.start_polling(bot)
 
