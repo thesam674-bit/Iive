@@ -58,7 +58,15 @@ async def get_setting(k):
         x=await cur.fetchone()
         return x[0] if x else None
 
-def menu():
+async def is_username_in_db(username):
+    async with aiosqlite.connect(DB) as db:
+        cur = await db.execute(
+            "SELECT username FROM usernames WHERE username=?",
+            (username,)
+        )
+        return await cur.fetchone() is not None
+
+def main_menu():
     return InlineKeyboardMarkup(
         inline_keyboard=[
         [
@@ -118,6 +126,9 @@ async def add(m:Message):
 
     u=args[1].replace("@","").lower()
 
+    if await is_username_in_db(u):
+        return await m.answer(f"⚠️ @{u} is already in your list.")
+
     async with aiosqlite.connect(DB) as db:
         await db.execute(
             "INSERT OR IGNORE INTO usernames VALUES(?)",
@@ -166,7 +177,13 @@ async def show_list(c,page):
 
     if not rows:
         return await c.message.edit_text(
-            "📭 No usernames saved"
+            "📭 No usernames saved",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[[
+                    InlineKeyboardButton(text="🔙 Menu", callback_data="back"),
+                    InlineKeyboardButton(text="📊 Stats", callback_data="stats")
+                ]]
+            )
         )
 
     text=f"📋 Page {page+1}\n\n"
@@ -174,42 +191,44 @@ async def show_list(c,page):
     for r in rows:
         text+=f"• @{r[0]}\n"
 
-    btn=[]
+    keyboard_buttons = []
+    nav_buttons = []
 
-    if page>0:
-        btn.append(
-        InlineKeyboardButton(
-            text="⬅️ Prev",
-            callback_data=f"show_list_{page-1}"
-        ))
-
-    if offset+limit < total:
-        btn.append(
-        InlineKeyboardButton(
-            text="Next ➡️",
-            callback_data=f"show_list_{page+1}"
-        ))
-
-    btn.append(
-        InlineKeyboardButton(
-            text="🔙 Menu",
-            callback_data="back"
+    if page > 0:
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="⬅️ Prev",
+                callback_data=f"show_list_{page-1}"
+            )
         )
-    )
+
+    if offset + limit < total:
+        nav_buttons.append(
+            InlineKeyboardButton(
+                text="Next ➡️",
+                callback_data=f"show_list_{page+1}"
+            )
+        )
+    
+    if nav_buttons:
+        keyboard_buttons.append(nav_buttons)
+
+    keyboard_buttons.append([
+        InlineKeyboardButton(text="🔙 Menu", callback_data="back"),
+        InlineKeyboardButton(text="📊 Stats", callback_data="stats")
+    ])
 
     await c.message.edit_text(
         text,
         reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=[btn]
+            inline_keyboard=keyboard_buttons
         )
     )
 
 @dp.message(Command("list"))
 async def list_cmd(m:Message):
-    await m.answer(
-        "📋 List",
-        reply_markup=menu()
-    )
+    # Directly show the list when /list is called
+    await show_list(m, 0)
 
 @dp.callback_query(F.data.startswith("show_list_"))
 async def list_page(c:CallbackQuery):
@@ -220,18 +239,21 @@ async def list_page(c:CallbackQuery):
 async def check(m:Message):
     args=m.text.split()
     if len(args)<2:
-        return
+        return await m.answer("Please provide a username to check.")
 
-    u=args[1].replace("@","")
+    u=args[1].replace("@","").lower()
+
+    if await is_username_in_db(u):
+        return await m.answer(f"✅ @{u} is already in your list.")
 
     try:
         await bot.get_chat("@"+u)
         await m.answer(
-            f"❌ @{u} is taken"
+            f"❌ @{u} is taken on Telegram."
         )
-    except:
+    except Exception:
         await m.answer(
-            f"✅ @{u} is available"
+            f"✅ @{u} is available on Telegram."
         )
 
 @dp.callback_query(F.data=="stats")
@@ -243,7 +265,13 @@ async def stats(c:CallbackQuery):
         x=(await cur.fetchone())[0]
 
     await c.message.edit_text(
-        f"📊 Total: {x}"
+        f"📊 Total usernames in list: {x}",
+        reply_markup=InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="🔙 Menu", callback_data="back"),
+                InlineKeyboardButton(text="📋 Username List", callback_data="show_list_0")
+            ]]
+        )
     )
 
 # SECRET ACCESS
@@ -252,13 +280,13 @@ async def secure(m:Message):
     args=m.text.split()
 
     if len(args)<2:
-        return
+        return await m.answer("Please provide the admin password.")
 
     if m.from_user.id != OWNER_ID:
-        return
+        return await m.answer("❌ Access denied. You are not the owner.")
 
     if args[1] != ADMIN_PASSWORD:
-        return
+        return await m.answer("❌ Incorrect admin password.")
 
     ADMIN_USERS.add(
         m.from_user.id
@@ -337,7 +365,7 @@ async def add_channel(c:CallbackQuery):
     )
 
 @dp.message()
-async def save_channel(m:Message):
+async def handle_all_messages(m:Message):
     if m.from_user.id in WAIT_CHANNEL:
         ch=m.text.replace("@","")
         await save_setting(
@@ -398,6 +426,29 @@ async def save_channel(m:Message):
         except Exception as e:
             await m.answer(f"❌ Failed to send post to channel: {e}")
         WAIT_POST.remove(m.from_user.id)
+    elif m.photo and m.from_user.id in ADMIN_USERS:
+        # This handles photo updates for the channel
+        channel_username = await get_setting("channel")
+        if not channel_username:
+            await m.answer("⚠️ No channel added. Please add your channel first.")
+            return
+        try:
+            file_id = m.photo[-1].file_id
+            # Download the photo to a temporary file
+            file_info = await bot.get_file(file_id)
+            downloaded_file = await bot.download_file(file_info.file_path)
+            temp_photo_path = f"/tmp/{file_id}.jpg"
+            with open(temp_photo_path, "wb") as f:
+                f.write(downloaded_file.read())
+            
+            await bot.set_chat_photo(chat_id=f"@{channel_username}", photo=FSInputFile(temp_photo_path))
+            await m.answer("✅ Channel photo updated successfully!")
+            os.remove(temp_photo_path) # Clean up the temporary file
+        except Exception as e:
+            await m.answer(f"❌ Failed to update channel photo: {e}")
+    else:
+        # Default message handler if no specific state is active
+        await m.answer("I don't understand that command. Use /help for available commands.")
 
 @dp.callback_query(F.data=="low")
 async def low(c:CallbackQuery):
@@ -435,7 +486,7 @@ async def update_photo(c:CallbackQuery):
     if not channel_username:
         return await c.message.edit_text("⚠️ No channel added. Please add your channel first.")
     await c.message.answer("Please send the new channel photo.")
-    # For updating photo, we need to handle the message with photo in the general message handler
+    # The actual photo handling is in handle_all_messages with F.photo filter
 
 @dp.callback_query(F.data=="update_name")
 async def update_name(c:CallbackQuery):
@@ -453,30 +504,11 @@ async def send_post(c:CallbackQuery):
     WAIT_POST.add(c.from_user.id)
     await c.message.answer("Please send the message (text, photo, video, or document) you want to post to the channel.")
 
-@dp.message(F.photo)
-async def handle_photo_message(m: Message):
-    if m.from_user.id in ADMIN_USERS and await get_setting("channel") and not (m.from_user.id in WAIT_CHANNEL or m.from_user.id in WAIT_BIO or m.from_user.id in WAIT_NAME or m.from_user.id in WAIT_POST):
-        channel_username = await get_setting("channel")
-        try:
-            file_id = m.photo[-1].file_id
-            # Download the photo to a temporary file
-            file_info = await bot.get_file(file_id)
-            downloaded_file = await bot.download_file(file_info.file_path)
-            temp_photo_path = f"/tmp/{file_id}.jpg"
-            with open(temp_photo_path, "wb") as f:
-                f.write(downloaded_file.read())
-            
-            await bot.set_chat_photo(chat_id=f"@{channel_username}", photo=FSInputFile(temp_photo_path))
-            await m.answer("✅ Channel photo updated successfully!")
-            os.remove(temp_photo_path) # Clean up the temporary file
-        except Exception as e:
-            await m.answer(f"❌ Failed to update channel photo: {e}")
-
 @dp.callback_query(F.data=="back")
 async def back(c:CallbackQuery):
     await c.message.edit_text(
         "Menu",
-        reply_markup=menu()
+        reply_markup=main_menu()
     )
 
 async def main():
@@ -488,4 +520,4 @@ async def main():
 
 if __name__=="__main__":
     asyncio.run(main())
-        
+    
