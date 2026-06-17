@@ -1,1 +1,3 @@
-
+aiogram==3.13.1
+python-dotenv
+aiosqlite
