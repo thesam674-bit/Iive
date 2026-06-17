@@ -25,6 +25,7 @@ WAIT_CHANNEL = set()
 WAIT_BIO = set()
 WAIT_NAME = set()
 WAIT_POST = set()
+WAIT_PHOTO = set() # New state for waiting for channel photo
 
 async def db_init():
     async with aiosqlite.connect(DB) as db:
@@ -144,7 +145,7 @@ async def add(m:Message):
 async def remove(m:Message):
     args=m.text.split()
     if len(args)<2:
-        return
+        return await m.answer("Please provide a username to remove.")
 
     u=args[1].replace("@","")
 
@@ -159,7 +160,7 @@ async def remove(m:Message):
         f"🗑 @{u} removed"
     )
 
-async def show_list(c,page):
+async def show_list_content(target_message, page):
     limit=10
     offset=page*limit
 
@@ -176,15 +177,22 @@ async def show_list(c,page):
         total=(await cur.fetchone())[0]
 
     if not rows:
-        return await c.message.edit_text(
-            "📭 No usernames saved",
-            reply_markup=InlineKeyboardMarkup(
-                inline_keyboard=[[
-                    InlineKeyboardButton(text="🔙 Menu", callback_data="back"),
-                    InlineKeyboardButton(text="📊 Stats", callback_data="stats")
-                ]]
-            )
+        keyboard = InlineKeyboardMarkup(
+            inline_keyboard=[[
+                InlineKeyboardButton(text="🔙 Menu", callback_data="back"),
+                InlineKeyboardButton(text="📊 Stats", callback_data="stats")
+            ]]
         )
+        if isinstance(target_message, Message):
+            return await target_message.answer(
+                "📭 No usernames saved",
+                reply_markup=keyboard
+            )
+        else: # CallbackQuery
+            return await target_message.message.edit_text(
+                "📭 No usernames saved",
+                reply_markup=keyboard
+            )
 
     text=f"📋 Page {page+1}\n\n"
 
@@ -218,22 +226,29 @@ async def show_list(c,page):
         InlineKeyboardButton(text="📊 Stats", callback_data="stats")
     ])
 
-    await c.message.edit_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(
-            inline_keyboard=keyboard_buttons
-        )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=keyboard_buttons
     )
+
+    if isinstance(target_message, Message):
+        await target_message.answer(
+            text,
+            reply_markup=keyboard
+        )
+    else: # CallbackQuery
+        await target_message.message.edit_text(
+            text,
+            reply_markup=keyboard
+        )
 
 @dp.message(Command("list"))
 async def list_cmd(m:Message):
-    # Directly show the list when /list is called
-    await show_list(m, 0)
+    await show_list_content(m, 0)
 
 @dp.callback_query(F.data.startswith("show_list_"))
 async def list_page(c:CallbackQuery):
     page=int(c.data.split("_")[2])
-    await show_list(c,page)
+    await show_list_content(c,page)
 
 @dp.message(Command("check"))
 async def check(m:Message):
@@ -426,35 +441,41 @@ async def handle_all_messages(m:Message):
         except Exception as e:
             await m.answer(f"❌ Failed to send post to channel: {e}")
         WAIT_POST.remove(m.from_user.id)
-    elif m.photo and m.from_user.id in ADMIN_USERS:
-        # This handles photo updates for the channel
+    elif m.from_user.id in WAIT_PHOTO:
         channel_username = await get_setting("channel")
         if not channel_username:
             await m.answer("⚠️ No channel added. Please add your channel first.")
+            WAIT_PHOTO.remove(m.from_user.id)
             return
-        try:
-            file_id = m.photo[-1].file_id
-            # Download the photo to a temporary file
-            file_info = await bot.get_file(file_id)
-            downloaded_file = await bot.download_file(file_info.file_path)
-            temp_photo_path = f"/tmp/{file_id}.jpg"
-            with open(temp_photo_path, "wb") as f:
-                f.write(downloaded_file.read())
-            
-            await bot.set_chat_photo(chat_id=f"@{channel_username}", photo=FSInputFile(temp_photo_path))
-            await m.answer("✅ Channel photo updated successfully!")
-            os.remove(temp_photo_path) # Clean up the temporary file
-        except Exception as e:
-            await m.answer(f"❌ Failed to update channel photo: {e}")
+        if m.photo:
+            try:
+                file_id = m.photo[-1].file_id
+                # Download the photo to a temporary file
+                file_info = await bot.get_file(file_id)
+                downloaded_file = await bot.download_file(file_info.file_path)
+                temp_photo_path = f"/tmp/{file_id}.jpg"
+                with open(temp_photo_path, "wb") as f:
+                    f.write(downloaded_file.read())
+                
+                await bot.set_chat_photo(chat_id=f"@{channel_username}", photo=FSInputFile(temp_photo_path))
+                await m.answer("✅ Channel photo updated successfully!")
+                os.remove(temp_photo_path) # Clean up the temporary file
+            except Exception as e:
+                await m.answer(f"❌ Failed to update channel photo: {e}")
+        else:
+            await m.answer("Please send a photo to update the channel photo.")
+        WAIT_PHOTO.remove(m.from_user.id)
     else:
         # Default message handler if no specific state is active
-        await m.answer("I don't understand that command. Use /help for available commands.")
+        # This is important to prevent the bot from getting stuck
+        if m.text and not m.text.startswith('/'): # Only respond to non-command text if not in a waiting state
+            await m.answer("I don't understand that command. Use /help for available commands.")
 
 @dp.callback_query(F.data=="low")
 async def low(c:CallbackQuery):
     ch=await get_setting("channel")
     if not ch:
-        return await c.message.edit_text(
+        return await c.message.answer(
             "⚠️ No channel added.\nPlease add your channel first."
         )
     await c.message.edit_text(
@@ -465,7 +486,7 @@ async def low(c:CallbackQuery):
 async def settings(c:CallbackQuery):
     ch=await get_setting("channel")
     if not ch:
-        return await c.message.edit_text(
+        return await c.message.answer(
             "⚠️ Please add channel first."
         )
     await c.message.edit_text(
@@ -476,7 +497,7 @@ async def settings(c:CallbackQuery):
 async def update_bio(c:CallbackQuery):
     channel_username = await get_setting("channel")
     if not channel_username:
-        return await c.message.edit_text("⚠️ No channel added. Please add your channel first.")
+        return await c.message.answer("⚠️ No channel added. Please add your channel first.")
     WAIT_BIO.add(c.from_user.id)
     await c.message.answer("Please send the new channel bio text.")
 
@@ -484,15 +505,15 @@ async def update_bio(c:CallbackQuery):
 async def update_photo(c:CallbackQuery):
     channel_username = await get_setting("channel")
     if not channel_username:
-        return await c.message.edit_text("⚠️ No channel added. Please add your channel first.")
+        return await c.message.answer("⚠️ No channel added. Please add your channel first.")
+    WAIT_PHOTO.add(c.from_user.id)
     await c.message.answer("Please send the new channel photo.")
-    # The actual photo handling is in handle_all_messages with F.photo filter
 
 @dp.callback_query(F.data=="update_name")
 async def update_name(c:CallbackQuery):
     channel_username = await get_setting("channel")
     if not channel_username:
-        return await c.message.edit_text("⚠️ No channel added. Please add your channel first.")
+        return await c.message.answer("⚠️ No channel added. Please add your channel first.")
     WAIT_NAME.add(c.from_user.id)
     await c.message.answer("Please send the new channel name.")
 
@@ -500,7 +521,7 @@ async def update_name(c:CallbackQuery):
 async def send_post(c:CallbackQuery):
     channel_username = await get_setting("channel")
     if not channel_username:
-        return await c.message.edit_text("⚠️ No channel added. Please add your channel first.")
+        return await c.message.answer("⚠️ No channel added. Please add your channel first.")
     WAIT_POST.add(c.from_user.id)
     await c.message.answer("Please send the message (text, photo, video, or document) you want to post to the channel.")
 
